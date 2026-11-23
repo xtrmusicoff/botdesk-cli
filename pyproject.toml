@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "botdesk"
+version = "1.0.0"
+description = "Run and manage one Telegram bot from the terminal."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=8.2",
+    "aiogram>=3.33,<4",
+    "cryptography>=42",
+]
+
+[project.scripts]
+botdesk = "botdesk.app:main"
+
+[tool.setuptools.packages.find]
+include = ["botdesk*"]
+
+[tool.setuptools.package-data]
+"botdesk.ui" = ["botdesk.tcss"]

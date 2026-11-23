@@ -11,7 +11,13 @@ Your master password encrypts the bot token only.
 - Python 3.11 or newer (developed and tested with Python 3.14).
 - Packages (see `requirements.txt`): `textual`, `aiogram`, `cryptography`. SQLite comes with Python.
 
-Install them from this folder:
+Install BotDesk straight from GitHub:
+
+```
+python -m pip install git+https://github.com/xtrmusicoff/botdesk-cli.git
+```
+
+Or clone the repository and install from its folder:
 
 ```
 python -m pip install -r requirements.txt
@@ -44,11 +50,17 @@ You can change the password later in **Settings → Change master password** (yo
 
 ## Run
 
-From this folder:
+After installing, start BotDesk with either command:
+
+```
+botdesk
+```
 
 ```
 python -m botdesk
 ```
+
+When you run from a cloned folder without installing, use `python -m botdesk` from that folder.
 
 ## Walkthrough
 
@@ -157,7 +169,7 @@ Live chat requests survive a restart. Requests whose window passed while BotDesk
 
 | What | Where |
 |---|---|
-| Data folder (profile) | On all platforms: `data/` beside the `botdesk/` package. Set `BOTDESK_HOME` to use a different folder. |
+| Data folder (profile) | Windows: `%APPDATA%\BotDesk`. macOS: `~/Library/Application Support/BotDesk`. Linux: `$XDG_DATA_HOME/BotDesk` or `~/.local/share/BotDesk`. Set `BOTDESK_HOME` to use a different folder. |
 | Database (settings, encrypted token, commands, chats, Unread items, outbox) | `<data folder>\botdesk.db` |
 | Log | `<data folder>\botdesk.log` (rotated at 1 MB, 3 backups). The token is redacted from every line. |
 | Saved files | The Files folder setting, by default `<data folder>\files` |
