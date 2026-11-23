@@ -1,0 +1,7 @@
+# Default BotDesk profile (database, logs and downloaded files)
+/data/
+
+# Python and pytest caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
