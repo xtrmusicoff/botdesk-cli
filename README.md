@@ -11,17 +11,15 @@ Your master password encrypts the bot token only.
 - Python 3.11 or newer (developed and tested with Python 3.14).
 - Packages (see `requirements.txt`): `textual`, `aiogram`, `cryptography`. SQLite comes with Python.
 
-Install BotDesk straight from GitHub:
+You can use BotDesk in either of two ways:
 
-```
-python -m pip install git+https://github.com/xtrmusicoff/botdesk-cli.git
-```
+- **Install as a Python package** (needs Python 3.11+). Installs the `botdesk` command and `python -m botdesk`:
 
-Or clone the repository and install from its folder:
+  ```
+  python -m pip install git+https://github.com/xtrmusicoff/botdesk-cli.git
+  ```
 
-```
-python -m pip install -r requirements.txt
-```
+- **Build a standalone executable** (no Python needed to run it). Clone the repository, then build (see [Build the executable](#build-the-executable)).
 
 ## Get a bot token from BotFather
 
@@ -61,6 +59,28 @@ python -m botdesk
 ```
 
 When you run from a cloned folder without installing, use `python -m botdesk` from that folder.
+
+### Build the executable
+
+Use this path if you want to run BotDesk without installing Python packages. You still need Python 3.11+ to build.
+
+1. Clone the repository and open its folder.
+2. Install the build requirements:
+
+   ```
+   python -m pip install -r packaging/requirements-build.txt
+   ```
+
+3. Build:
+
+   ```
+   python packaging/build_exe.py
+   ```
+
+4. Run the file written to `packaging/dist/` (`botdesk.exe` on Windows, `botdesk` on macOS and Linux).
+
+PyInstaller builds for the system it runs on. Build on each platform where you want to run the executable.
+The data folder is the same as for the Python package, so the executable and the package share one profile.
 
 ## Walkthrough
 

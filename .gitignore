@@ -1,6 +1,11 @@
 # Default BotDesk profile (database, logs and downloaded files)
 /data/
 
+# PyInstaller build output
+/packaging/build/
+/packaging/dist/
+/packaging/botdesk.spec
+
 # Python and pytest caches
 __pycache__/
 *.py[cod]
