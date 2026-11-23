@@ -10,7 +10,11 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
-from botdesk.store import ACTIONS, SEND_MESSAGE
+from botdesk.store import ACTIONS, ASK_BUTTONS, SEND_MESSAGE, WAIT_DELAY
+from botdesk.validation import parse_buttons, parse_delay
+
+# Actions whose step text is shown in the text box.
+TEXT_ACTIONS = {SEND_MESSAGE, "ask_question", ASK_BUTTONS, WAIT_DELAY}
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -117,7 +121,7 @@ class StepDialog(ModalScreen[tuple[str, str] | None]):
                 id="action",
             )
             with Vertical(id="text-box"):
-                yield Label("Message text")
+                yield Label("Message text", id="text-label")
                 yield TextArea(self.text, id="text")
             yield Static("", id="hint", classes="hint")
             yield Static("", id="error", classes="error", markup=False)
@@ -129,23 +133,37 @@ class StepDialog(ModalScreen[tuple[str, str] | None]):
         self._sync_visibility(self.action_value)
 
     def _sync_visibility(self, action: str) -> None:
-        self.query_one("#text-box").display = action == SEND_MESSAGE
+        self.query_one("#text-box").display = action in TEXT_ACTIONS
         hints = {
             SEND_MESSAGE: "Sends this text to the user.",
             "live_chat": "Opens a live chat and sends the \"Connecting you with the bot's owner\" message (Settings).",
             "wait_file": "Waits until the user sends a file. Later steps run after the file arrives.",
+            "ask_question": "Sends the first line as the question. The user's next text message is saved to Live / Unread.",
+            "ask_buttons": "First line is the question. Each following line is one button. Pressing a button saves it to Live / Unread.",
+            "wait_delay": "Enter a number of seconds, from 1 to 86400. Later steps run after the delay.",
         }
         self.query_one("#hint", Static).update(hints.get(action, ""))
+        label = "Seconds" if action == WAIT_DELAY else "Message text"
+        self.query_one("#text-label", Label).update(label)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         self._sync_visibility(str(event.value))
 
     def action_save(self) -> None:
         action = str(self.query_one("#action", Select).value)
-        text = self.query_one("#text", TextArea).text if action == SEND_MESSAGE else ""
-        if action == SEND_MESSAGE and not text.strip():
-            self.query_one("#error", Static).update("The message text cannot be empty.")
+        text = self.query_one("#text", TextArea).text if action in TEXT_ACTIONS else ""
+        error = self.query_one("#error", Static)
+        if action in TEXT_ACTIONS and not text.strip():
+            error.update("This step needs text.")
             return
+        if action == WAIT_DELAY and parse_delay(text) is None:
+            error.update("Enter a whole number of seconds from 1 to 86400.")
+            return
+        if action == ASK_BUTTONS:
+            question, options = parse_buttons(text)
+            if not question or not options:
+                error.update("Write the question on the first line and at least one button on the next lines.")
+                return
         self.dismiss((action, text))
 
     def action_cancel(self) -> None:

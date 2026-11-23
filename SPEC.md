@@ -30,10 +30,10 @@ BotDesk is a Python terminal application (TUI) that runs and manages **one** Tel
 ## 3. Out of scope
 
 - Multiple bots, multiple owners or operators.
-- Other action types: inline buttons, photos, shell scripts, Python hooks.
+- Other action types: photos, shell scripts, Python hooks. (Question, buttons and delay actions were added later; see section 6.)
 - File type or size validation (BotDesk does not enforce limits).
 - Web UI, hosting, deployment.
-- Storing plain text from users who have no open live chat.
+- Storing plain text from users who have no open live chat and no pending question.
 
 ## 4. Main menu
 
@@ -72,8 +72,11 @@ A command has a name and an ordered list of steps. Steps run in order.
 1. **send message**: sends configured text to the user.
 2. **request to live chat**: opens a live chat sub-chat for this user (see 8) and sends the "Connecting you with the bot's owner" message.
 3. **wait for file**: the bot waits for the user to send a file. The received file becomes an item in Unread (see 9).
+4. **ask a question**: sends the step's text as a question, then waits for the user's next plain-text message. That message is stored as an answer and shown in Unread, with the question. There is no timeout; the wait lasts until the user replies or the command is replaced.
+5. **ask with buttons**: the first line of the step text is the question. Each following line is one button label (up to 8, each cut to 64 characters). The buttons are sent as a Telegram reply keyboard. Pressing one stores the label as an answer in Unread. Text that matches no button is ignored and the buttons stay open.
+6. **wait for a delay**: pauses the command for a number of seconds, from 1 to 86400. The due time is stored in the database, so the delay survives a restart. When it passes, the remaining steps run.
 
-Only these three actions exist in this version.
+Commands run their steps in order. An action that waits (wait for file, ask a question, ask with buttons, wait for a delay) pauses the command until its condition is met. Only one wait is active per user at a time; starting a new command with a wait replaces the older one.
 
 ### 6.1 Command name rules
 - Lowercase letters, digits and underscores, 1 to 32 characters, unique.

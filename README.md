@@ -90,6 +90,7 @@ The data folder is the same as for the Python package, so the executable and the
    - `a` → action **wait for file** → `ctrl+s`.
    - `a` → action **send message** → `Thanks, we got your file.` → `ctrl+s`.
    - Reorder with `shift+up` / `shift+down` (or `[` / `]`), edit with `e` or Enter, delete with `d`. Changes are saved immediately.
+   - Other actions you can add the same way: ask a question (first line is the question), ask with buttons (first line is the question, each following line is one button), and wait for a delay (a number of seconds from 1 to 86400). Their answers and button presses appear in Live / Unread under Answers, where `d` deletes one.
    - `/start` is not created for you. It is a normal command, so add it the same way if you want a greeting.
 2. **Test it in Telegram.** Open your bot and send `/support`. You get the first message and the
    "Connecting you with the bot's owner" message. BotDesk rings the terminal bell, shows a notification,
@@ -176,6 +177,8 @@ offset in one SQLite transaction. If processing fails before commit, none of tho
 polling does not advance past the failed update. BotDesk retries it. After 5 failed attempts BotDesk skips the
 update, logs the error with its details, and shows a notice. The changes from a skipped update are lost.
 The attempt count is kept in memory, so a restart starts counting again.
+The main menu shows the number of skipped updates on the **Live / Unread** entry, as `Skipped updates: N`.
+Opening **Live / Unread** clears the count.
 
 Outgoing replies and notices stay in a local queue while offline. Delivery is **not exactly once**:
 if Telegram accepts a message but BotDesk stops before recording that success, a retry can send it twice.

@@ -14,7 +14,7 @@ from textual.widgets.option_list import Option
 
 from botdesk.engine import TELEGRAM_DOWNLOAD_LIMIT
 from botdesk.logsetup import redact
-from botdesk.store import WAITING, Chat, FileItem
+from botdesk.store import WAITING, Answer, Chat, FileItem
 from botdesk.ui.dialogs import ConfirmDialog
 from botdesk.ui.menu import _highlighted_id, _keep_highlight
 
@@ -58,6 +58,8 @@ class LiveScreen(Screen):
         yield OptionList(id="chats", markup=False)
         yield Static("Received files  -  s: save   d: delete", classes="section")
         yield OptionList(id="files", markup=False)
+        yield Static("Answers  -  d: delete", classes="section")
+        yield OptionList(id="answers", markup=False)
         yield Static("", id="details", markup=False)
         yield Static(
             "Known limit: Telegram lets bots download files up to 20 MB. BotDesk does not check sizes.",
@@ -66,6 +68,8 @@ class LiveScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Opening Live / Unread marks skipped updates as seen.
+        self.app.store.delete_setting("skipped_updates")
         self.refresh_data()
         self.query_one("#chats", OptionList).focus()
         self.set_interval(1, self._tick)
@@ -96,9 +100,22 @@ class LiveScreen(Screen):
         _keep_highlight(files, file_options, _highlighted_id(files))
         if not file_options:
             files.add_option(Option("(no files)", id="none", disabled=True))
+        answers_list = self.query_one("#answers", OptionList)
+        answer_options = [
+            Option(f"{a.user_label}: {a.answer[:60]}", id=str(a.id)) for a in store.list_answers()
+        ]
+        _keep_highlight(answers_list, answer_options, _highlighted_id(answers_list))
+        if not answer_options:
+            answers_list.add_option(Option("(no answers)", id="none", disabled=True))
         if chats.option_count == 0:
             chats.add_option(Option("(no live chats)", id="none", disabled=True))
         self._show_details()
+
+    def _selected_answer(self) -> Answer | None:
+        option_id = _highlighted_id(self.query_one("#answers", OptionList))
+        if not option_id or option_id == "none":
+            return None
+        return self.app.store.get_answer(int(option_id))
 
     def _selected_file(self) -> FileItem | None:
         option_id = _highlighted_id(self.query_one("#files", OptionList))
@@ -168,6 +185,20 @@ class LiveScreen(Screen):
 
             self.app.push_screen(
                 ConfirmDialog(f"Delete '{item.file_name}' from Unread? It will not be saved.", "Delete"), deleted
+            )
+            return
+        if self.focused is self.query_one("#answers"):
+            answer = self._selected_answer()
+            if answer is None:
+                return
+
+            def answer_deleted(confirmed: bool | None) -> None:
+                if confirmed:
+                    self.app.store.delete_answer(answer.id)
+                    self.app.refresh_views()
+
+            self.app.push_screen(
+                ConfirmDialog(f"Delete the answer from {answer.user_label}?", "Delete"), answer_deleted
             )
             return
         option_id = _highlighted_id(self.query_one("#chats", OptionList))

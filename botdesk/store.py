@@ -11,11 +11,19 @@ from typing import Iterator
 SEND_MESSAGE = "send_message"
 LIVE_CHAT = "live_chat"
 WAIT_FILE = "wait_file"
+ASK_QUESTION = "ask_question"
+ASK_BUTTONS = "ask_buttons"
+WAIT_DELAY = "wait_delay"
 ACTIONS = {
     SEND_MESSAGE: "send message",
     LIVE_CHAT: "request to live chat",
     WAIT_FILE: "wait for file",
+    ASK_QUESTION: "ask a question",
+    ASK_BUTTONS: "ask with buttons",
+    WAIT_DELAY: "wait for a delay",
 }
+# A pending flow's kind is the action that paused it.
+PAUSING_ACTIONS = (WAIT_FILE, ASK_QUESTION, ASK_BUTTONS, WAIT_DELAY)
 
 WAITING = "waiting"
 ACCEPTED = "accepted"
@@ -80,13 +88,25 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS flows (
     chat_id INTEGER PRIMARY KEY,
     command_id INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
-    step_id INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE
+    step_id INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'wait_file',
+    due_at REAL
 );
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY,
     chat_id INTEGER NOT NULL,
     text TEXT NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    keyboard TEXT
+);
+CREATE TABLE IF NOT EXISTS answers (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    user_label TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    unread INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_steps_command ON steps(command_id, position);
 CREATE INDEX IF NOT EXISTS idx_chats_chat ON chats(chat_id, state);
@@ -146,10 +166,22 @@ class FileItem:
 
 
 @dataclass(frozen=True)
+class Answer:
+    id: int
+    chat_id: int
+    user_label: str
+    question: str
+    answer: str
+    created_at: float
+    unread: bool
+
+
+@dataclass(frozen=True)
 class OutboxItem:
     id: int
     chat_id: int
     text: str
+    keyboard: str | None = None
 
 
 APPLICATION_ID = 0x42444B31  # "BDK1": marks databases created by this BotDesk
@@ -173,8 +205,21 @@ class Store:
         if str(path) != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.execute(f"PRAGMA application_id = {APPLICATION_ID}")
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that older profiles lack. Existing rows keep their values."""
+        additions = {
+            "flows": {"kind": "TEXT NOT NULL DEFAULT 'wait_file'", "due_at": "REAL"},
+            "outbox": {"keyboard": "TEXT"},
+        }
+        for table, columns in additions.items():
+            present = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in present:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def _check_owner(self, path: Path | str) -> None:
         """Refuse a non-empty database that this BotDesk did not create."""
@@ -314,23 +359,60 @@ class Store:
         self._commit()
         return True
 
-    # ----- flows (a command paused on "wait for file") -----
+    # ----- flows (a command paused on a wait step) -----
     def get_flow(self, chat_id: int) -> tuple[int, int] | None:
         r = self.conn.execute(
             "SELECT command_id, step_id FROM flows WHERE chat_id = ?", (chat_id,)
         ).fetchone()
         return (r["command_id"], r["step_id"]) if r else None
 
-    def set_flow(self, chat_id: int, command_id: int, step_id: int) -> None:
+    def get_flow_full(self, chat_id: int) -> sqlite3.Row | None:
+        """The pending flow with its kind and due time, or None."""
+        return self.conn.execute("SELECT * FROM flows WHERE chat_id = ?", (chat_id,)).fetchone()
+
+    def set_flow(self, chat_id: int, command_id: int, step_id: int, kind: str = WAIT_FILE,
+                 due_at: float | None = None) -> None:
         self._exec(
-            "INSERT INTO flows(chat_id, command_id, step_id) VALUES(?, ?, ?) "
+            "INSERT INTO flows(chat_id, command_id, step_id, kind, due_at) VALUES(?, ?, ?, ?, ?) "
             "ON CONFLICT(chat_id) DO UPDATE SET command_id = excluded.command_id, "
-            "step_id = excluded.step_id",
-            (chat_id, command_id, step_id),
+            "step_id = excluded.step_id, kind = excluded.kind, due_at = excluded.due_at",
+            (chat_id, command_id, step_id, kind, due_at),
         )
 
     def clear_flow(self, chat_id: int) -> None:
         self._exec("DELETE FROM flows WHERE chat_id = ?", (chat_id,))
+
+    def due_delay_flows(self, now: float) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM flows WHERE kind = ? AND due_at IS NOT NULL AND due_at <= ?",
+            (WAIT_DELAY, now),
+        ).fetchall()
+
+    # ----- answers to "ask a question" and "ask with buttons" -----
+    def add_answer(self, chat_id: int, user_label: str, question: str, answer: str, now: float) -> int:
+        return self._exec(
+            "INSERT INTO answers(chat_id, user_label, question, answer, created_at, unread) "
+            "VALUES(?, ?, ?, ?, ?, 1)",
+            (chat_id, user_label, question, answer, now),
+        ).lastrowid
+
+    @staticmethod
+    def _answer(r: sqlite3.Row) -> Answer:
+        return Answer(
+            r["id"], r["chat_id"], r["user_label"], r["question"], r["answer"],
+            r["created_at"], bool(r["unread"]),
+        )
+
+    def list_answers(self) -> list[Answer]:
+        rows = self.conn.execute("SELECT * FROM answers ORDER BY id DESC").fetchall()
+        return [self._answer(r) for r in rows]
+
+    def get_answer(self, ref: int) -> Answer | None:
+        r = self.conn.execute("SELECT * FROM answers WHERE id = ?", (ref,)).fetchone()
+        return self._answer(r) if r else None
+
+    def delete_answer(self, ref: int) -> None:
+        self._exec("DELETE FROM answers WHERE id = ?", (ref,))
 
     # ----- live chats -----
     @staticmethod
@@ -430,12 +512,15 @@ class Store:
         self._exec("DELETE FROM files WHERE id = ?", (ref,))
 
     # ----- outbox -----
-    def enqueue(self, chat_id: int, text: str, now: float) -> None:
-        self._exec("INSERT INTO outbox(chat_id, text, created_at) VALUES(?, ?, ?)", (chat_id, text, now))
+    def enqueue(self, chat_id: int, text: str, now: float, keyboard: str | None = None) -> None:
+        self._exec(
+            "INSERT INTO outbox(chat_id, text, created_at, keyboard) VALUES(?, ?, ?, ?)",
+            (chat_id, text, now, keyboard),
+        )
 
     def pending_outbox(self, limit: int = 20) -> list[OutboxItem]:
         rows = self.conn.execute("SELECT * FROM outbox ORDER BY id LIMIT ?", (limit,)).fetchall()
-        return [OutboxItem(r["id"], r["chat_id"], r["text"]) for r in rows]
+        return [OutboxItem(r["id"], r["chat_id"], r["text"], r["keyboard"]) for r in rows]
 
     def delete_outbox(self, ref: int) -> None:
         self._exec("DELETE FROM outbox WHERE id = ?", (ref,))
@@ -444,4 +529,5 @@ class Store:
     def unread_count(self) -> int:
         chats = self.conn.execute("SELECT COUNT(*) FROM chats WHERE unread = 1").fetchone()[0]
         files = self.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        return chats + files
+        answers = self.conn.execute("SELECT COUNT(*) FROM answers WHERE unread = 1").fetchone()[0]
+        return chats + files + answers

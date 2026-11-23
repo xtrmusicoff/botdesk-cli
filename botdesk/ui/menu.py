@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, OptionList, Static
 from textual.widgets.option_list import Option
 
+from botdesk import __version__
 from botdesk.engine import CONNECTED, RECONNECTING
 from botdesk.store import ACTIONS, SEND_MESSAGE
 from botdesk.ui.dialogs import ConfirmDialog, StepDialog, TextPromptDialog
@@ -53,6 +54,7 @@ class MainMenuScreen(Screen):
             markup=False,
         )
         yield Static("", id="status")
+        yield Static("", id="profile", classes="hint", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -64,8 +66,14 @@ class MainMenuScreen(Screen):
 
     def refresh_data(self) -> None:
         unread = self.app.store.unread_count()
+        skipped = int(self.app.store.get("skipped_updates") or 0)
         label = f"Live / Unread ({unread})" if unread else "Live / Unread"
+        if skipped:
+            label += f"  -  Skipped updates: {skipped}"
         self.query_one("#menu", OptionList).replace_option_prompt("live", label)
+        self.query_one("#profile", Static).update(
+            f"BotDesk {__version__}   Profile: {self.app.data_path}"
+        )
         status = self.app.engine.status
         style = {CONNECTED: "bold green", RECONNECTING: "bold yellow"}.get(status, "bold red")
         line = Text.assemble("Status: ", (status, style))

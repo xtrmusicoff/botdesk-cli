@@ -229,6 +229,100 @@ async def test_save_file_sanitizes_and_suffixes(env, tmp_path):
     assert store.list_files() == []
 
 
+def test_ask_question_stores_next_reply(env):
+    store, engine, _clock, _ = env
+    make_command(store, "q", [
+        (st.ASK_QUESTION, "What is your order number?"),
+        (st.SEND_MESSAGE, "Thanks."),
+    ])
+    engine.handle(text(3, "/q"))
+    assert outbox(store) == [(3, "What is your order number?")]
+    engine.handle(text(3, "A-1042"))
+    [answer] = store.list_answers()
+    assert (answer.question, answer.answer, answer.user_label) == (
+        "What is your order number?", "A-1042", "user3",
+    )
+    assert outbox(store) == [(3, "Thanks.")]
+
+
+def test_ask_question_ignores_text_when_no_question_pending(env):
+    store, engine, *_ = env
+    engine.handle(text(4, "random text"))
+    assert store.list_answers() == []
+
+
+def test_ask_buttons_sends_keyboard_and_records_choice(env):
+    store, engine, _clock, _ = env
+    make_command(store, "b", [
+        (st.ASK_BUTTONS, "Pick a topic\nBilling\nTechnical"),
+        (st.SEND_MESSAGE, "Got it."),
+    ])
+    engine.handle(text(5, "/b"))
+    [item] = store.pending_outbox()
+    assert item.text == "Pick a topic"
+    assert item.keyboard == '["Billing", "Technical"]'
+    store.delete_outbox(item.id)
+    engine.handle(text(5, "Something else"))  # not a button: ignored, step stays open
+    assert store.list_answers() == []
+    engine.handle(text(5, "Technical"))
+    [answer] = store.list_answers()
+    assert (answer.question, answer.answer) == ("Pick a topic", "Technical")
+    assert outbox(store) == [(5, "Got it.")]
+
+
+def test_wait_delay_resumes_after_time_passes(env):
+    store, engine, clock, _ = env
+    make_command(store, "d", [
+        (st.SEND_MESSAGE, "First"),
+        (st.WAIT_DELAY, "60"),
+        (st.SEND_MESSAGE, "Second"),
+    ])
+    engine.handle(text(6, "/d"))
+    assert outbox(store) == [(6, "First")]
+    assert engine.resume_due_delays() == 0
+    clock.now += 59
+    assert engine.resume_due_delays() == 0
+    clock.now += 1
+    assert engine.resume_due_delays() == 1
+    assert outbox(store) == [(6, "Second")]
+
+
+def test_wait_delay_survives_restart(tmp_path):
+    path = tmp_path / "delay.db"
+    clock = Clock()
+    s1 = Store(path)
+    make_command(s1, "d", [(st.WAIT_DELAY, "120"), (st.SEND_MESSAGE, "Later")])
+    e1 = Engine(s1, clock=clock)
+    e1.handle(text(7, "/d"))
+    s1.close()
+    clock.now += 500  # BotDesk was closed past the due time
+    s2 = Store(path)
+    e2 = Engine(s2, clock=clock)
+    assert e2.resume_due_delays() == 1
+    assert [i.text for i in s2.pending_outbox()] == ["Later"]
+    s2.close()
+
+
+def test_migration_adds_columns_to_old_profile(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA application_id = 0x42444B31")  # the ID real BotDesk profiles carry
+    conn.executescript(
+        "CREATE TABLE flows (chat_id INTEGER PRIMARY KEY, command_id INTEGER NOT NULL, step_id INTEGER NOT NULL);"
+        "CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, text TEXT NOT NULL, created_at REAL NOT NULL);"
+        "INSERT INTO outbox(chat_id, text, created_at) VALUES(9, 'kept', 0);"
+    )
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    cols = {r["name"] for r in store.conn.execute("PRAGMA table_info(outbox)")}
+    assert "keyboard" in cols
+    assert [i.text for i in store.pending_outbox()] == ["kept"]
+    store.close()
+
+
 async def test_save_file_offline_keeps_item(env, tmp_path):
     store, engine, *_ = env
     make_command(store, "up", [(st.WAIT_FILE, "")])

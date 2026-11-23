@@ -103,6 +103,34 @@ async def test_settings_invalid_window_keeps_previous(tmp_path):
         await app.action_quit()
 
 
+async def test_main_menu_shows_version_profile_and_skipped_count(tmp_path):
+    from botdesk import __version__
+
+    app, store = make_app(tmp_path)
+    store.set("skipped_updates", "2")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await setup_password(pilot, app)
+        menu = app.screen.query_one("#menu")
+        assert "Skipped updates: 2" in str(menu.get_option("live").prompt)
+        profile = str(app.screen.query_one("#profile").render())
+        assert __version__ in profile and str(tmp_path) in profile
+        await app.action_quit()
+
+
+async def test_opening_live_unread_clears_skipped_count(tmp_path):
+    app, store = make_app(tmp_path)
+    store.set("skipped_updates", "2")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await setup_password(pilot, app)
+        await pilot.press("l")
+        await wait_for(pilot, lambda: type(app.screen).__name__ == "LiveScreen")
+        assert store.get("skipped_updates") == ""
+        await pilot.press("escape")
+        await wait_for(pilot, lambda: type(app.screen).__name__ == "MainMenuScreen")
+        assert "Skipped" not in str(app.screen.query_one("#menu").get_option("live").prompt)
+        await app.action_quit()
+
+
 async def test_live_chat_reply_from_ui(tmp_path):
     app, store = make_app(tmp_path)
     async with app.run_test(size=(110, 40)) as pilot:

@@ -95,6 +95,11 @@ ModalScreen {
     margin: 0 1;
 }
 
+#answers {
+    height: 1fr;
+    margin: 0 1;
+}
+
 #details {
     height: 5;
     margin: 0 1;

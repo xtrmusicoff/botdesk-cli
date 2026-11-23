@@ -35,6 +35,34 @@ def parse_window(text: str) -> int:
     return seconds
 
 
+DELAY_MIN = 1
+DELAY_MAX = 86400
+BUTTON_MAX = 8
+BUTTON_LABEL_MAX = 64
+
+
+def parse_delay(text: str) -> int | None:
+    """Parse a delay step's seconds. Returns None if the value is not valid."""
+    value = text.strip()
+    if not value.isascii() or not value.isdigit():
+        return None
+    seconds = int(value)
+    return seconds if DELAY_MIN <= seconds <= DELAY_MAX else None
+
+
+def parse_buttons(text: str) -> tuple[str, list[str]]:
+    """Split a buttons step into its question (first line) and button labels (following lines).
+
+    Blank lines are ignored. Labels are cut to BUTTON_LABEL_MAX characters and at most
+    BUTTON_MAX are kept.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "", []
+    question, options = lines[0], [line[:BUTTON_LABEL_MAX] for line in lines[1:]]
+    return question, options[:BUTTON_MAX]
+
+
 def looks_like_token(text: str) -> bool:
     return bool(TOKEN_RE.fullmatch(text.strip()))
 

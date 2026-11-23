@@ -127,6 +127,7 @@ async def test_persistently_failing_update_is_skipped_after_limit(tmp_path, monk
     await run_engine(engine, bot, lambda: bot.sent)
     assert bot.sent == [(1, "Hi")]
     assert store.get("update_offset") == "12"
+    assert store.get("skipped_updates") == "1"
     store.close()
 
 

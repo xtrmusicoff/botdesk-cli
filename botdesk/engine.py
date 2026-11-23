@@ -8,6 +8,7 @@ Telegram and means no message is lost while the bot is offline.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -16,7 +17,13 @@ from typing import Callable
 
 from botdesk import store as st
 from botdesk.store import Store
-from botdesk.validation import TELEGRAM_TEXT_LIMIT, reserve_unique_file, sanitize_filename
+from botdesk.validation import (
+    TELEGRAM_TEXT_LIMIT,
+    parse_buttons,
+    parse_delay,
+    reserve_unique_file,
+    sanitize_filename,
+)
 
 log = logging.getLogger("botdesk.engine")
 
@@ -45,6 +52,20 @@ class Incoming:
     text: str | None = None
     caption: str | None = None
     file: IncomingFile | None = None
+
+
+def _markup(keyboard: str | None):
+    """Turn a stored keyboard (JSON list of labels) into a Telegram reply keyboard, or None.
+
+    Each button is its own row. Labels are sent back as plain text when pressed.
+    """
+    if not keyboard:
+        return None
+    from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+
+    labels = json.loads(keyboard)
+    rows = [[KeyboardButton(text=label)] for label in labels]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
 
 
 def split_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
@@ -172,11 +193,62 @@ class Engine:
 
         if text is not None:
             chat = self.store.open_chat_for(msg.chat_id)
-            if chat is None:
-                return  # plain text with no open live chat is not stored
-            self.store.add_chat_message(chat.id, "user", text, now)
-            self.store.set_chat_unread(chat.id, True)
+            if chat is not None:
+                self.store.add_chat_message(chat.id, "user", text, now)
+                self.store.set_chat_unread(chat.id, True)
+                self._on_change()
+                return
+            flow = self.store.get_flow_full(msg.chat_id)
+            if flow is not None and flow["kind"] == st.ASK_BUTTONS:
+                step = next((s for s in self.store.list_steps(flow["command_id"]) if s.id == flow["step_id"]), None)
+                _question, options = parse_buttons(step.text if step is not None else "")
+                if text in options:
+                    self.handle_button(msg.chat_id, msg.user_label, text)
+                    return
+                # Text that is not one of the buttons is ignored; the buttons stay open.
+                return
+            if flow is not None and flow["kind"] == st.ASK_QUESTION:
+                self._answer_flow(msg, flow, text)
+            # Other plain text with no open chat or question is not stored (SPEC 6.2).
+            return
+
+    def _answer_flow(self, msg: Incoming, flow, answer: str) -> None:
+        """The user answered an 'ask a question' step: store the answer and continue."""
+        step = next((s for s in self.store.list_steps(flow["command_id"]) if s.id == flow["step_id"]), None)
+        question = step.text if step is not None else ""
+        self.store.clear_flow(msg.chat_id)
+        self.store.add_answer(msg.chat_id, msg.user_label, question, answer, self.clock())
+        log.info("Answer stored from chat %s", msg.chat_id)
+        self._on_alert(f"New answer from {msg.user_label}")
+        self._on_change()
+        self._run_steps(msg, flow["command_id"], start_after=flow["step_id"])
+
+    def handle_button(self, chat_id: int, user_label: str, label: str) -> None:
+        """The user pressed a button from an 'ask with buttons' step."""
+        flow = self.store.get_flow_full(chat_id)
+        if flow is None or flow["kind"] != st.ASK_BUTTONS:
+            return  # stale button: the step already moved on
+        step = next((s for s in self.store.list_steps(flow["command_id"]) if s.id == flow["step_id"]), None)
+        question, _options = parse_buttons(step.text if step is not None else "")
+        msg = Incoming(chat_id=chat_id, user_label=user_label)
+        self.store.clear_flow(chat_id)
+        self.store.add_answer(chat_id, user_label, question, label, self.clock())
+        log.info("Button answer stored from chat %s", chat_id)
+        self._on_alert(f"New answer from {user_label}")
+        self._on_change()
+        self._run_steps(msg, flow["command_id"], start_after=flow["step_id"])
+
+    def resume_due_delays(self) -> int:
+        """Resume flows whose delay has passed. Returns how many resumed."""
+        now = self.clock()
+        due = self.store.due_delay_flows(now)
+        for flow in due:
+            self.store.clear_flow(flow["chat_id"])
+            msg = Incoming(chat_id=flow["chat_id"], user_label="")
+            self._run_steps(msg, flow["command_id"], start_after=flow["step_id"])
+        if due:
             self._on_change()
+        return len(due)
 
     def _run_steps(self, msg: Incoming, command_id: int, start_after: int | None) -> None:
         steps = self.store.list_steps(command_id)
@@ -192,7 +264,29 @@ class Engine:
             elif step.action == st.LIVE_CHAT:
                 self._request_live_chat(msg)
             elif step.action == st.WAIT_FILE:
-                self.store.set_flow(msg.chat_id, command_id, step.id)
+                self.store.set_flow(msg.chat_id, command_id, step.id, kind=st.WAIT_FILE)
+                return
+            elif step.action == st.ASK_QUESTION:
+                if step.text.strip():
+                    self.send(msg.chat_id, step.text)
+                self.store.set_flow(msg.chat_id, command_id, step.id, kind=st.ASK_QUESTION)
+                return
+            elif step.action == st.ASK_BUTTONS:
+                question, options = parse_buttons(step.text)
+                if not options:
+                    log.warning("Step #%s has no button options; skipped", step.id)
+                    continue
+                self.send(msg.chat_id, question, keyboard=options)
+                self.store.set_flow(msg.chat_id, command_id, step.id, kind=st.ASK_BUTTONS)
+                return
+            elif step.action == st.WAIT_DELAY:
+                seconds = parse_delay(step.text)
+                if seconds is None:
+                    log.warning("Step #%s has an invalid delay; skipped", step.id)
+                    continue
+                due = self.clock() + seconds
+                self.store.set_flow(msg.chat_id, command_id, step.id, kind=st.WAIT_DELAY, due_at=due)
+                self._wake.set()
                 return
 
     def _request_live_chat(self, msg: Incoming) -> None:
@@ -239,10 +333,15 @@ class Engine:
             self._on_change()
         return len(due)
 
-    def send(self, chat_id: int, text: str) -> None:
+    def send(self, chat_id: int, text: str, keyboard: list[str] | None = None) -> None:
+        """Queue a message. A keyboard, if given, is attached to the last chunk."""
         now = self.clock()
-        for chunk in split_text(text):
-            self.store.enqueue(chat_id, chunk, now)
+        chunks = split_text(text)
+        for index, chunk in enumerate(chunks):
+            markup = None
+            if keyboard and index == len(chunks) - 1:
+                markup = json.dumps(keyboard)
+            self.store.enqueue(chat_id, chunk, now, keyboard=markup)
         self._wake.set()
 
     def request_menu_sync(self) -> None:
@@ -285,6 +384,7 @@ class Engine:
         await self.stop()
         self._wake = asyncio.Event()
         self.expire_due()
+        self.resume_due_delays()
         self._tasks.append(asyncio.create_task(self._expiry_loop(), name="botdesk-expiry"))
         if not token:
             self._set_status(OFFLINE)
@@ -318,6 +418,7 @@ class Engine:
         while True:
             try:
                 self.expire_due()
+                self.resume_due_delays()
             except Exception:
                 log.exception("Expiry check failed")
             await asyncio.sleep(1)
@@ -405,9 +506,12 @@ class Engine:
         self._failed_updates.pop(update.update_id, None)
 
     def _skip_update(self, update_id: int) -> None:
-        """Advance the saved offset past an update that is being given up on."""
+        """Advance the saved offset past an update that is being given up on, and count it."""
         with self.store.transaction():
             self.store.set("update_offset", str(update_id + 1))
+            skipped = int(self.store.get("skipped_updates") or 0) + 1
+            self.store.set("skipped_updates", str(skipped))
+        self._on_change()
 
     async def _outbox_loop(self) -> None:
         while True:
@@ -440,7 +544,10 @@ class Engine:
                 return
             for item in items:
                 try:
-                    await self.bot.send_message(item.chat_id, item.text)
+                    if item.keyboard:
+                        await self.bot.send_message(item.chat_id, item.text, reply_markup=_markup(item.keyboard))
+                    else:
+                        await self.bot.send_message(item.chat_id, item.text)
                 except TelegramRetryAfter as exc:
                     await asyncio.sleep(exc.retry_after)
                     return
